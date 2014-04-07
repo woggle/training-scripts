@@ -191,6 +191,7 @@ def launch_cluster(conn, opts, cluster_name):
     master_group.authorize('tcp', 5050, 5050, '0.0.0.0/0')
     master_group.authorize('tcp', 38090, 38090, '0.0.0.0/0')
     master_group.authorize('tcp', 19999, 19999, '0.0.0.0/0')
+    master_group.authorize('tcp', 8888, 8888, '0.0.0.0/0')
     if opts.ganglia:
       master_group.authorize('tcp', 5080, 5080, '0.0.0.0/0')
   if slave_group.rules == []: # Group was just now created
@@ -204,6 +205,8 @@ def launch_cluster(conn, opts, cluster_name):
     slave_group.authorize('tcp', 60060, 60060, '0.0.0.0/0')
     slave_group.authorize('tcp', 60075, 60075, '0.0.0.0/0')
     slave_group.authorize('tcp', 5051, 5051, '0.0.0.0/0')
+    slave_group.authorize('tcp', 4040, 4050, '0.0.0.0/0')
+    slave_group.authorize('tcp', 8888, 8888, '0.0.0.0/0')
   if zoo_group.rules == []: # Group was just now created
     zoo_group.authorize(src_group=master_group)
     zoo_group.authorize(src_group=slave_group)
@@ -407,7 +410,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     scp(master, opts, opts.identity_file, '~/.ssh/id_rsa')
     ssh(master, opts, 'chmod 600 ~/.ssh/id_rsa')
 
-  modules = ['ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training', 'tachyon']
+  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training', 'tachyon']
 
   if opts.ganglia:
     modules.append('ganglia')
@@ -415,7 +418,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
   # NOTE: We should clone the repository before running deploy_files to
   # prevent ec2-variables.sh from being overwritten
   ssh(master, opts,
-      "rm -rf spark-ec2 && git clone -b ampcamp4 https://github.com/mesos/spark-ec2.git")
+      "rm -rf spark-ec2 && git clone -b cs194-16 https://github.com/kayousterhout/spark-ec2.git")
 
   print "Deploying files to master..."
   deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
@@ -471,18 +474,16 @@ def copy_ampcamp_data_from_ebs(master_nodes, opts):
   print "Copying AMP Camp MovieLens data..."
   ssh(master, opts,
       "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/movielens /movielens")
-  print "Copying AMP Camp Wikipedia graph data..."
-  ssh(master, opts,
-      "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/wiki_links /wiki_links")
-  print "Copying AMP Camp Wikipedia pagecount data..."
-  ssh(master, opts,
-      "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/pagecounts /wiki/pagecounts")
-#  print "Copying AMP Camp Wikipedia featurized data..."
-#  ssh(master, opts,
-#      "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/wikistats_featurized_new /wikistats_featurized")
-#  print "Copying AMP Camp Wikipedia articles data..."
-#  ssh(master, opts,
-#      "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/enwiki_txt /")
+  #print "Copying Amazon review data..."
+  #print "   Copying data to local disk"
+  #ssh(master, opts, "cp /ampcamp-data/all.txt.gz /mnt/")
+  #print "   Unzipping data"
+  #ssh(master, opts, "gunzip /mnt/all.txt.gz")
+  #print "   Copying data to HDFS"
+  #ssh(master, opts,
+  #    "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /mnt/all.txt /amazon_reviews")
+  #print "   Deleting original data"
+  #ssh(master, opts, "rm /mnt/all.txt")
 
 def copy_ampcamp_data_from_s3(master_nodes, opts):
   master = master_nodes[0].public_dns_name
