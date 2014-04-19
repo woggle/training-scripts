@@ -48,8 +48,8 @@ def parse_args():
                     help="Show this help message and exit")
   parser.add_option("-s", "--slaves", type="int", default=5,
       help="Number of slaves to launch (default: 1)")
-  parser.add_option("-w", "--wait", type="int", default=120,
-      help="Seconds to wait for nodes to start (default: 120)")
+  parser.add_option("-w", "--wait", type="int", default=180,
+      help="Seconds to wait for nodes to start (default: 180)")
   parser.add_option("-k", "--key-pair",
       help="Key pair to use on instances")
   parser.add_option("-i", "--identity-file",
@@ -65,7 +65,7 @@ def parse_args():
       help="Availability zone to launch instances in, or 'all' to spread " +
            "slaves across multiple (an additional $0.01/Gb for bandwidth" +
            "between zones applies)")
-  parser.add_option("-a", "--ami", default="latest",
+  parser.add_option("-a", "--ami", default="ami-09a2b060",
       help="Amazon Machine Image ID to use, or 'latest' to use latest " +
            "available AMI (default: latest)")
   parser.add_option("-D", metavar="[ADDRESS:]PORT", dest="proxy_port",
@@ -410,7 +410,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     scp(master, opts, opts.identity_file, '~/.ssh/id_rsa')
     ssh(master, opts, 'chmod 600 ~/.ssh/id_rsa')
 
-  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training', 'tachyon']
+  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training']
 
   if opts.ganglia:
     modules.append('ganglia')
