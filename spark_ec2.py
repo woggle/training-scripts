@@ -109,6 +109,8 @@ def parse_args():
   parser.add_option("--destroy-noprompt", action="store_true", default=False,
       help="Disable prompt confirmation for destroy. ONLY do this if you " +
            "are sure you want to destroy a cluster (default: false)")
+  parser.add_option("--add-slaves", type="int", default=0,
+      help="Number of additional slaves to launch (default: 0)")
 
 
   (opts, args) = parser.parse_args()
@@ -1074,6 +1076,10 @@ def main():
         "You can login to the master at " + master_nodes[0].public_dns_name
 
   elif action == "add-slaves":
+    if opts.add_slaves <= 0:
+      print "ERROR: add-slaves must be greater than zero."
+      sys.exit(0)
+
     (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
         conn, opts, cluster_name)
     print "Adding slaves..."
