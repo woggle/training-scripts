@@ -806,7 +806,7 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     cluster_url = "%s:7077" % active_master
 
   if add_slave_nodes and add_slave_nodes != []:
-    add_slave_list = '\n'.join([i.public_dns_name for i in add_slave_nodes]),
+    add_slave_list = '\n'.join([i.public_dns_name for i in add_slave_nodes])
   else:
     add_slave_list = ''
 
