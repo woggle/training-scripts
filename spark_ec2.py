@@ -166,6 +166,130 @@ def wait_for_instances(conn, instances):
 def is_active(instance):
   return (instance.state in ['pending', 'running', 'stopping', 'stopped'])
 
+def launch_additional_slaves(conn, opts, cluster_name):
+  print "Setting up security groups..."
+  slave_group = get_or_make_group(conn, "ampcamp3-slaves")
+  if slave_group.rules == []: # Group was just now created
+    slave_group.authorize(src_group=master_group)
+    slave_group.authorize(src_group=slave_group)
+    slave_group.authorize(src_group=zoo_group)
+    slave_group.authorize('tcp', 22, 22, '0.0.0.0/0')
+    slave_group.authorize('tcp', 8080, 8081, '0.0.0.0/0')
+    slave_group.authorize('tcp', 50060, 50060, '0.0.0.0/0')
+    slave_group.authorize('tcp', 50075, 50075, '0.0.0.0/0')
+    slave_group.authorize('tcp', 60060, 60060, '0.0.0.0/0')
+    slave_group.authorize('tcp', 60075, 60075, '0.0.0.0/0')
+    slave_group.authorize('tcp', 5051, 5051, '0.0.0.0/0')
+    slave_group.authorize('tcp', 4040, 4050, '0.0.0.0/0')
+    slave_group.authorize('tcp', 8888, 8888, '0.0.0.0/0')
+
+  # Figure out the latest AMI from our static URL
+  if opts.ami == "latest":
+    try:
+      opts.ami = urllib2.urlopen(LATEST_AMI_URL).read().strip()
+      print "Latest Spark AMI: " + opts.ami
+    except:
+      print >> stderr, "Could not read " + LATEST_AMI_URL
+      sys.exit(1)
+
+  print "Launching instances..."
+
+  try:
+    image = conn.get_all_images(image_ids=[opts.ami])[0]
+  except:
+    print >> stderr, "Could not find AMI " + opts.ami
+    sys.exit(1)
+
+  # Create block device mapping so that we can add an EBS volume if asked to
+  block_map = BlockDeviceMapping()
+  if opts.ebs_vol_size > 0:
+    device = EBSBlockDeviceType()
+    device.size = opts.ebs_vol_size
+    device.delete_on_termination = True
+    block_map["/dev/sdv"] = device
+
+  # Launch slaves
+  if opts.spot_price != None:
+    # Launch spot instances with the requested price
+    print ("Requesting %d slaves as spot instances with price $%.3f" %
+           (opts.add_slaves, opts.spot_price))
+    zones = get_zones(conn, opts)
+    num_zones = len(zones)
+    i = 0
+    my_req_ids = []
+    for zone in zones:
+      num_slaves_this_zone = get_partition(opts.add_slaves, num_zones, i)
+      slave_reqs = conn.request_spot_instances(
+          price = opts.spot_price,
+          image_id = opts.ami,
+          launch_group = "launch-group-%s" % cluster_name,
+          placement = zone,
+          count = num_slaves_this_zone,
+          key_name = opts.key_pair,
+          security_groups = [slave_group],
+          instance_type = opts.instance_type,
+          block_device_map = block_map)
+      my_req_ids += [req.id for req in slave_reqs]
+      i += 1
+
+    print "Waiting for spot instances to be granted..."
+    try:
+      while True:
+        time.sleep(10)
+        reqs = conn.get_all_spot_instance_requests()
+        id_to_req = {}
+        for r in reqs:
+          id_to_req[r.id] = r
+        active_instance_ids = []
+        for i in my_req_ids:
+          if i in id_to_req and id_to_req[i].state == "active":
+            active_instance_ids.append(id_to_req[i].instance_id)
+        if len(active_instance_ids) == opts.add_slaves:
+          print "All %d slaves granted" % opts.add_slaves
+          reservations = conn.get_all_instances(active_instance_ids)
+          add_slave_nodes = []
+          for r in reservations:
+            add_slave_nodes += r.instances
+          break
+        else:
+          print "%d of %d slaves granted, waiting longer" % (
+            len(active_instance_ids), opts.add_slaves)
+    except:
+      print "Canceling spot instance requests"
+      conn.cancel_spot_instance_requests(my_req_ids)
+      sys.exit(0)
+  else:
+    # Launch non-spot instances
+    zones = get_zones(conn, opts)
+    num_zones = len(zones)
+    i = 0
+    add_slave_nodes = []
+    for zone in zones:
+      num_slaves_this_zone = get_partition(opts.add_slaves, num_zones, i)
+      if num_slaves_this_zone > 0:
+        slave_res = image.run(key_name = opts.key_pair,
+                              security_groups = [slave_group],
+                              instance_type = opts.instance_type,
+                              placement = zone,
+                              min_count = num_slaves_this_zone,
+                              max_count = num_slaves_this_zone,
+                              block_device_map = block_map)
+        add_slave_nodes += slave_res.instances
+        print "Launched %d slaves in %s, regid = %s" % (num_slaves_this_zone,
+                                                        zone, slave_res.id)
+      i += 1
+
+  # Create the right tags
+  tags = {}
+  tags['cluster'] = cluster_name
+
+  tags['type'] = 'slave'
+  for node in add_slave_nodes:
+    conn.create_tags([node.id], tags)
+
+  # Return all the instances
+  return add_slave_nodes
+
 
 # Launch a cluster of the given name, by setting up its security groups,
 # and then starting new instances in them.
@@ -399,6 +523,33 @@ def get_existing_cluster(conn, opts, cluster_name, die_on_error=True):
       print "ERROR: Could not find any existing cluster"
     sys.exit(1)
 
+def setup_additional_nodes(conn, master_nodes, slave_nodes, zoo_nodes, add_slave_nodes, opts, deploy_ssh_key):
+  master = master_nodes[0].public_dns_name
+  if deploy_ssh_key:
+    print "Copying SSH key %s to master..." % opts.identity_file
+    ssh(master, opts, 'mkdir -p ~/.ssh')
+    scp(master, opts, opts.identity_file, '~/.ssh/id_rsa')
+    ssh(master, opts, 'chmod 600 ~/.ssh/id_rsa')
+
+  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training']
+
+  if opts.ganglia:
+    modules.append('ganglia')
+
+  # NOTE: We should clone the repository before running deploy_files to
+  # prevent ec2-variables.sh from being overwritten
+  print "Deploying files to master..."
+  deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
+          zoo_nodes, modules, add_slave_nodes)
+
+  print "Running setup on master..."
+  add_nodes_to_spark_cluster(master, opts)
+  print "Done!"
+
+def add_nodes_to_spark_cluster(master, opts):
+  ssh(master, opts, "chmod u+x spark-ec2/add-slaves.sh")
+  ssh(master, opts, "spark-ec2/add-slaves.sh")
+
 
 # Deploy configuration files and run setup scripts on a newly launched
 # or started EC2 cluster.
@@ -422,7 +573,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
 
   print "Deploying files to master..."
   deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
-          zoo_nodes, modules)
+          zoo_nodes, modules, [])
 
   print "Running setup on master..."
   setup_spark_cluster(master, opts)
@@ -631,7 +782,7 @@ def get_num_cpus(instance_type):
 # the first master instance in the cluster, and we expect the setup
 # script to be run on that instance to copy them to other nodes.
 def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
-        modules):
+        modules, add_slave_nodes=None):
   active_master = master_nodes[0].public_dns_name
 
   num_disks = get_num_disks(opts.instance_type)
@@ -652,10 +803,16 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     zoo_list = "NONE"
     cluster_url = "%s:7077" % active_master
 
+  if add_slave_nodes and add_slave_nodes != []:
+    add_slave_list = '\n'.join([i.public_dns_name for i in add_slave_nodes]),
+  else:
+    add_slave_list = ''
+
   template_vars = {
     "master_list": '\n'.join([i.public_dns_name for i in master_nodes]),
     "active_master": active_master,
     "slave_list": '\n'.join([i.public_dns_name for i in slave_nodes]),
+    "add_slave_list": add_slave_list,
     "zoo_list": zoo_list,
     "cluster_url": cluster_url,
     "hdfs_data_dirs": hdfs_data_dirs,
@@ -914,6 +1071,17 @@ def main():
     if opts.copy:
       copy_ampcamp_data_from_ebs(master_nodes, opts)
     print >>stderr, "SUCCESS: Cluster successfully launched! " + \
+        "You can login to the master at " + master_nodes[0].public_dns_name
+
+  elif action == "add-slaves":
+    (master_nodes, slave_nodes, zoo_nodes) = get_existing_cluster(
+        conn, opts, cluster_name)
+    print "Adding slaves..."
+    add_slave_nodes = launch_additional_slaves(conn, opts, cluster_name)
+
+    wait_for_cluster(conn, opts.wait, [], add_slave_nodes, [])
+    setup_additional_nodes(conn, master_nodes, slave_nodes, zoo_nodes, add_slave_nodes, opts, False)
+    print >>stderr, "SUCCESS: Cluster successfully updated! " + \
         "You can login to the master at " + master_nodes[0].public_dns_name
 
   else:
