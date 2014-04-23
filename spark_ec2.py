@@ -538,6 +538,9 @@ def setup_additional_nodes(conn, master_nodes, slave_nodes, zoo_nodes, add_slave
   if opts.ganglia:
     modules.append('ganglia')
 
+  ssh(master, opts,
+      "pushd spark-ec2 && git pull && popd")
+
   # NOTE: We should clone the repository before running deploy_files to
   # prevent ec2-variables.sh from being overwritten
   print "Deploying files to master..."
