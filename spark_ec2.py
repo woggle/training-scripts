@@ -112,6 +112,12 @@ def parse_args():
   parser.add_option("--add-slaves", type="int", default=0,
       help="Number of additional slaves to launch (default: 0)")
 
+  parser.add_option("--spark-ec2-git", default="https://github.com/woggle/spark-ec2.git",
+      help="Place to git clone spark-ec2 from on master")
+
+  parser.add_option("--spark-ec2-git-branch", default="cs194-16",
+      help="Branch of spark-ec2 to clone on master")
+
 
   (opts, args) = parser.parse_args()
   if len(args) != 2:
@@ -574,7 +580,9 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
   # NOTE: We should clone the repository before running deploy_files to
   # prevent ec2-variables.sh from being overwritten
   ssh(master, opts,
-      "rm -rf spark-ec2 && git clone -b cs194-16 https://github.com/kayousterhout/spark-ec2.git")
+      "rm -rf spark-ec2 && git clone -b {branch} {repo}".format(
+        repo=opts.spark_ec2_git, branch=opts.spark_ec2_git_branch
+      ))
 
   print "Deploying files to master..."
   deploy_files(conn, "deploy.generic", opts, master_nodes, slave_nodes,
