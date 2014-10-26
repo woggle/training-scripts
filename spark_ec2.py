@@ -21,22 +21,30 @@ from __future__ import with_statement
 
 import logging
 import os
+import pipes
 import random
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
 import time
 import urllib2
 import json
+import warnings
 from optparse import OptionParser
 from sys import stderr
 import boto
-from boto.ec2.blockdevicemapping import BlockDeviceMapping, EBSBlockDeviceType
+from boto.ec2.blockdevicemapping import BlockDeviceMapping, BlockDeviceType, EBSBlockDeviceType
 from boto import ec2
 
 # A static URL from which to figure out the latest Mesos EC2 AMI
 LATEST_AMI_URL = "http://s3.amazonaws.com/ampcamp-amis/latest-ampcamp3"
+DEFAULT_SPARK_VERSION = "1.1.0"
+DEFAULT_SHARK_VERSION = "1.1.0"
+
+class UsageError(Exception):
+    pass
 
 
 # Configure and parse our command-line arguments
@@ -46,7 +54,7 @@ def parse_args():
       add_help_option=False)
   parser.add_option("-h", "--help", action="help",
                     help="Show this help message and exit")
-  parser.add_option("-s", "--slaves", type="int", default=5,
+  parser.add_option("-s", "--slaves", type="int", default=1,
       help="Number of slaves to launch (default: 1)")
   parser.add_option("-w", "--wait", type="int", default=180,
       help="Seconds to wait for nodes to start (default: 180)")
@@ -59,13 +67,13 @@ def parse_args():
            "WARNING: must be 64-bit; small instances won't work")
   parser.add_option("-m", "--master-instance-type", default="",
       help="Master instance type (leave empty for same as instance-type)")
-  parser.add_option("-r", "--region", default="us-east-1",
+  parser.add_option("-r", "--region", default="us-west-2",
       help="EC2 region zone to launch instances in")
   parser.add_option("-z", "--zone", default="",
       help="Availability zone to launch instances in, or 'all' to spread " +
            "slaves across multiple (an additional $0.01/Gb for bandwidth" +
            "between zones applies)")
-  parser.add_option("-a", "--ami", default="ami-09a2b060",
+  parser.add_option("-a", "--ami", default="latest",
       help="Amazon Machine Image ID to use, or 'latest' to use latest " +
            "available AMI (default: latest)")
   parser.add_option("-D", metavar="[ADDRESS:]PORT", dest="proxy_port",
@@ -83,7 +91,7 @@ def parse_args():
   parser.add_option("--spot-price", metavar="PRICE", type="float",
       help="If specified, launch slaves as spot instances with the given " +
             "maximum price (in dollars)")
-  parser.add_option("-g", "--ganglia", action="store_true", default=True,
+  parser.add_option("-g", "--ganglia", action="store_true", default=False,
       help="Setup ganglia monitoring for the cluster. NOTE: The ganglia " +
       "monitoring page will be publicly accessible")
   parser.add_option("-u", "--user", default="root",
@@ -118,6 +126,9 @@ def parse_args():
   parser.add_option("--spark-ec2-git-branch", default="cs194-16",
       help="Branch of spark-ec2 to clone on master")
 
+  parser.add_option("--spark_version", default=DEFAULT_SPARK_VERSION)
+  parser.add_option("--shark_version", default=DEFAULT_SHARK_VERSION)
+
 
   (opts, args) = parser.parse_args()
   if len(args) != 2:
@@ -132,7 +143,7 @@ def parse_args():
   # Boto config check
   # http://boto.cloudhackers.com/en/latest/boto_config_tut.html
   home_dir = os.getenv('HOME')
-  if home_dir == None or not os.path.isfile(home_dir + '/.boto'):
+  if home_dir == None or (not os.path.isfile(home_dir + '/.boto') and not os.path.isfile(home_dir + '/.aws/credentials')):
     if not os.path.isfile('/etc/boto.cfg'):
       if os.getenv('AWS_ACCESS_KEY_ID') == None:
         print >> stderr, ("ERROR: The environment variable AWS_ACCESS_KEY_ID " +
@@ -539,7 +550,7 @@ def setup_additional_nodes(conn, master_nodes, slave_nodes, zoo_nodes, add_slave
     scp(master, opts, opts.identity_file, '~/.ssh/id_rsa')
     ssh(master, opts, 'chmod 600 ~/.ssh/id_rsa')
 
-  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training']
+  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'spark', 'spark-standalone', 'training']
 
   if opts.ganglia:
     modules.append('ganglia')
@@ -572,7 +583,7 @@ def setup_cluster(conn, master_nodes, slave_nodes, zoo_nodes, opts, deploy_ssh_k
     scp(master, opts, opts.identity_file, '~/.ssh/id_rsa')
     ssh(master, opts, 'chmod 600 ~/.ssh/id_rsa')
 
-  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'mesos', 'spark-standalone', 'training']
+  modules = ['cs194-16', 'ephemeral-hdfs', 'persistent-hdfs', 'spark', 'spark-standalone', 'training']
 
   if opts.ganglia:
     modules.append('ganglia')
@@ -634,6 +645,9 @@ def check_spark_cluster(master_nodes, opts):
 
 def copy_ampcamp_data_from_ebs(master_nodes, opts):
   master = master_nodes[0].public_dns_name
+
+  # Wait some time for HDFS to come up, just in case
+  time.sleep(60)
 
   print "Copying AMP Camp MovieLens data..."
   ssh(master, opts,
@@ -742,39 +756,78 @@ def wait_for_cluster(conn, wait_secs, master_nodes, slave_nodes, zoo_nodes):
 
 # Get number of local disks available for a given EC2 instance type.
 def get_num_disks(instance_type):
-  # From http://docs.amazonwebservices.com/AWSEC2/latest/UserGuide/index.html?InstanceStorage.html
-  disks_by_instance = {
-    "m1.small":    1,
-    "m1.medium":   1,
-    "m1.large":    2,
-    "m1.xlarge":   4,
-    "t1.micro":    1,
-    "c1.medium":   1,
-    "c1.xlarge":   4,
-    "m2.xlarge":   1,
-    "m2.2xlarge":  1,
-    "m2.4xlarge":  2,
-    "cc1.4xlarge": 2,
-    "cc2.8xlarge": 4,
-    "cg1.4xlarge": 2
-  }
-  if instance_type in disks_by_instance:
-    return disks_by_instance[instance_type]
-  else:
-    print >> stderr, ("WARNING: Don't know number of disks on instance type %s; assuming 1"
-                      % instance_type)
-    return 1
+    # Source: http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/InstanceStorage.html
+    # Last Updated: 2014-06-20
+    # For easy maintainability, please keep this manually-inputted dictionary sorted by key.
+    disks_by_instance = {
+        "c1.medium":   1,
+        "c1.xlarge":   4,
+        "c3.2xlarge":  2,
+        "c3.4xlarge":  2,
+        "c3.8xlarge":  2,
+        "c3.large":    2,
+        "c3.xlarge":   2,
+        "cc1.4xlarge": 2,
+        "cc2.8xlarge": 4,
+        "cg1.4xlarge": 2,
+        "cr1.8xlarge": 2,
+        "g2.2xlarge":  1,
+        "hi1.4xlarge": 2,
+        "hs1.8xlarge": 24,
+        "i2.2xlarge":  2,
+        "i2.4xlarge":  4,
+        "i2.8xlarge":  8,
+        "i2.xlarge":   1,
+        "m1.large":    2,
+        "m1.medium":   1,
+        "m1.small":    1,
+        "m1.xlarge":   4,
+        "m2.2xlarge":  1,
+        "m2.4xlarge":  2,
+        "m2.xlarge":   1,
+        "m3.2xlarge":  2,
+        "m3.large":    1,
+        "m3.medium":   1,
+        "m3.xlarge":   2,
+        "r3.2xlarge":  1,
+        "r3.4xlarge":  1,
+        "r3.8xlarge":  2,
+        "r3.large":    1,
+        "r3.xlarge":   1,
+        "t1.micro":    0,
+        "t2.small":    0,
+    }
+    if instance_type in disks_by_instance:
+        return disks_by_instance[instance_type]
+    else:
+        print >> stderr, ("WARNING: Don't know number of disks on instance type %s; assuming 1"
+                          % instance_type)
+        return 1
+
 
 # Get number of CPUs available for a given EC2 instance type.
 def get_num_cpus(instance_type):
   # From http://aws.amazon.com/ec2/instance-types/
   cpus_by_instance = {
+    "c1.medium":   2,
+    "c3.large":   2,
     "m1.small":    1,
+    "m2.small":    1,
+    "m3.small":    1,
     "m1.large":    2,
+    "m2.large":    2,
+    "m3.large":    2,
     "m1.xlarge":   4,
+    "m2.xlarge":   4,
+    "m3.xlarge":   4,
     "t1.micro":    1,
+    "t2.micro":    1,
+    "t2.small":   2,
+    "t2.medium":   4,
     "c1.medium":   2,
     "c1.xlarge":   8,
+    "c3.xlarge":   4,
+    "c3.2xlarge":  8,
     "m2.xlarge":   2,
     "m2.2xlarge":  4,
     "m2.4xlarge":  8,
@@ -832,7 +885,9 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     "mapred_local_dirs": mapred_local_dirs,
     "spark_local_dirs": spark_local_dirs,
     "swap": str(opts.swap),
-    "modules": '\n'.join(modules)
+    "modules": '\n'.join(modules),
+    "spark_version": opts.spark_version,
+    "shark_version": opts.shark_version,
   }
 
   # Create a temp directory in which we will place all the files to be
