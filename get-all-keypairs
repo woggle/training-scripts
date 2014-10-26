@@ -1,6 +1,6 @@
 #!/bin/bash
 
-PYTHONPATH="./third_party/boto-2.4.1.zip/boto-2.4.1:$PYTHONPATH" python -c \
+PYTHONPATH="./third_party/boto-2.34.0.zip/boto-2.34.0:$PYTHONPATH" python -c \
 "import boto; "\
 "from boto import *;"\
 "conn = connect_ec2();"\
