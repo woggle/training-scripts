@@ -652,6 +652,8 @@ def copy_ampcamp_data_from_ebs(master_nodes, opts):
   print "Copying AMP Camp MovieLens data..."
   ssh(master, opts,
       "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/movielens /movielens")
+  ssh(master, opts,
+      "/root/ephemeral-hdfs/bin/hadoop fs -setrep -w 20 -R /movielens || true")
   #print "Copying Amazon review data..."
   #print "   Copying data to local disk"
   #ssh(master, opts, "cp /ampcamp-data/all.txt.gz /mnt/")
