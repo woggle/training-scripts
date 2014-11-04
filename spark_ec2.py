@@ -652,8 +652,12 @@ def copy_ampcamp_data_from_ebs(master_nodes, opts):
   print "Copying AMP Camp MovieLens data..."
   ssh(master, opts,
       "/root/ephemeral-hdfs/bin/hadoop fs -copyFromLocal /ampcamp-data/movielens /movielens")
-  ssh(master, opts,
-      "/root/ephemeral-hdfs/bin/hadoop fs -setrep -w 20 -R /movielens || true")
+  if opts.slaves > 21: 
+      ssh(master, opts,
+          "/root/ephemeral-hdfs/bin/hadoop fs -setrep -w 20 -R /movielens || true")
+  elif opts.slaves > 2:
+      ssh(master, opts,
+          "/root/ephemeral-hdfs/bin/hadoop fs -setrep -w %d -R /movielens || true" % (opts.slaves - 1))
   #print "Copying Amazon review data..."
   #print "   Copying data to local disk"
   #ssh(master, opts, "cp /ampcamp-data/all.txt.gz /mnt/")
@@ -890,6 +894,7 @@ def deploy_files(conn, root_dir, opts, master_nodes, slave_nodes, zoo_nodes,
     "modules": '\n'.join(modules),
     "spark_version": opts.spark_version,
     "shark_version": opts.shark_version,
+    "spark_workers": str(len(slave_nodes)),
   }
 
   # Create a temp directory in which we will place all the files to be
