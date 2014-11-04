@@ -13,7 +13,7 @@ def read_passwords(log_fh):
         elif next_is_password:
             next_is_password = False
             if line.startswith('ec2-'):
-                machine, password = line.split(' ', 2)
+                machine, password = line.split(' ', 1)
                 result.append((machine, password))
     return result
 
@@ -53,7 +53,7 @@ if __name__ == '__main__':
     students = read_students(args.students_list)
     result = assign_machines(passwords, students)
     writer = csv.writer(args.output_file)
+    writer.writerow(('hostname', 'password', 'email', 'name'))
     for line in result:
-        writer.writerow(('hostname', 'password', 'email', 'name'))
         writer.writerow(line)
     args.output_file.close() 

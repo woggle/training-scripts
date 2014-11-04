@@ -84,6 +84,8 @@ if __name__ == '__main__':
     with open(args.passwords_csv) as fh:
         reader = csv.DictReader(fh)
         for record in reader:
+            if record['email'] == '':
+                continue
             message = generate_email(args,
                 to_email=record['email'],
                 name=record['name'],
