@@ -1,0 +1,20 @@
+Dear {name},
+
+For Lab 9, we have a setup a cluster on EC2 which is running a small Spark
+cluster and IPython notebooks.
+
+For this lab, you will connect the following IPython notebook server,
+which is password protected. Note that this since this is over HTTPS (because
+we don't want to send the password in the clear), you will have to go through
+a browser warning about a self-signed certificate.
+
+The URL of your notebook is:
+
+https://{hostname}:8888/
+
+The password is: {password}
+
+Thanks,
+- CS194-16 Course Staff
+
+
